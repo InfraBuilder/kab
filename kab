@@ -1,0 +1,249 @@
+#!/bin/bash
+
+export LC_ALL=C # Trick to no depend on locale
+
+#===/ Utility functions \======================================================
+
+[ "$(tput colors)" -gt 0 ] && COLOR="true" || COLOR="false"
+function color {
+	$COLOR || return 0
+	color="0"
+	case $1 in
+		normal) color="0" ;;
+		rst) color="0" ;;
+		red) color="31" ;;
+		green) color="32" ;;
+		yellow) color="33" ;;
+		blue) color="34" ;;
+		magenta) color="35" ;;
+		cyan) color="36" ;;
+		lightred) color="91" ;;
+		lightgreen) color="92" ;;
+		lightyellow) color="93" ;;
+		lightblue) color="94" ;;
+		lightmagenta) color="95" ;;
+		lightcyan) color="96" ;;
+		white) color="97" ;;
+		*) color="0" ;;
+	esac
+	echo -e "\033[0;${color}m"
+}
+
+function logdate { date "+%Y-%m-%d %H:%M:%S"; }
+function fatal { echo "$(logdate) $(color red)[FATAL]$(color normal) $@" >&2; cleanandexit 1; }
+function err { echo "$(logdate) $(color lightred)[ERROR]$(color normal) $@" >&2; }
+function warn { [ $DEBUG_LEVEL -ge 1 ] && echo "$(logdate) $(color yellow)[WARNING]$(color normal) $@" >&2; }
+function info { [ $DEBUG_LEVEL -ge 2 ] && echo "$(logdate) $(color cyan)[INFO]$(color normal) $@" >&2; }
+function debug { [ $DEBUG_LEVEL -ge 3 ] && echo "$(logdate) $(color lightcyan)[DEBUG]$(color normal) $@" >&2; }
+function now { date +%s; }
+
+function usage {
+	cat <<-EOF
+	kab is a Kubernetes backup tool for resources only (not for volumes data)
+	=====[ Optionnal flags ]============================================
+	    -y
+	    --yes                         : Bypass confirmation
+	    -cr <list>
+	    --cluster-resources <list>    : Set cluster-wide resource list, comma separated
+	    -nr <list>
+	    --namespaced-resources <list> : Set namespaced resource list, comma separated
+	    -d <dir>
+	    --backup-dir <dir>            : Set backup directory target
+	    --debug                       : Set debug level to "debug"
+	    -dl <level>
+	    --debug-level <level>         : Set debug level
+	                                  Possible values: standard, warn, info, debug
+	    -h
+	    --help                        : Display this help message
+	    -v
+	    --verbose                     : Activate verbose mode by setting debug-level to 'info'
+	    -V
+	    --version                     : Show current script version
+	=====[ Examples ]==========================================================
+	  Backup all cluster resources the easy way, with confirmation
+	  -------------------------------------------------------------------------
+	  | kab                                                                   |
+	  -------------------------------------------------------------------------
+	  Backup all cluster resources without confirmation (batch mode)
+	  -------------------------------------------------------------------------
+	  | kab -y                                                                |
+	  -------------------------------------------------------------------------
+	  Backup all ressources, create files in current directory
+	  -------------------------------------------------------------------------
+	  | kab -d .                                                              |
+	  -------------------------------------------------------------------------
+	  Backup only cluster resources, by using empty namespaces resources list
+	  -------------------------------------------------------------------------
+	  | knb -nr ""                                                            |
+	  -------------------------------------------------------------------------
+EOF
+}
+
+#===\ Utility functions /======================================================
+
+#===/ Argument parsing \=======================================================
+
+# default values
+VERSION=1.0.0
+CLUSTER_RESOURCES=auto
+NAMESPACED_RESOURCES=auto
+BACKUPDIR=$(date +"%Y%m%d-%H%M%S")-full
+
+DEBUG=false
+DEBUG_LEVEL=2
+
+# Parsing
+UNKNOWN_ARGLIST=""
+while [ "$1" != "" ]
+do
+	arg=$1
+	case $arg in
+		# Set the name of this benchmark run
+		--backup-dir|-d)
+			shift
+			[ "$1" = "" ] && fatal "$arg flag must be followed by a value"
+			BACKUPDIR="$1"
+			info "Setting backup dir to '$BACKUPDIR'"
+			;;
+		# Directory where to save graphs:
+		--cluster-resources|-cr)
+			shift
+			[ "${1:0:1}" = "-" ] && fatal "$arg flag must be followed by a value"
+			CLUSTER_RESOURCES="$1"
+			info "Cluster resources set to ${CLUSTER_RESOURCES}"
+			;;
+		# Directory where to save graphs:
+		--namespaced-resources|-nr)
+			shift
+			[ "${1:0:1}" = "-" ] && fatal "$arg flag must be followed by a value"
+			NAMESPACED_RESOURCES="$1"
+			info "Namespaced resources set to ${NAMESPACED_RESOURCES}"
+			;;
+
+		# Set the debug level to "debug"
+		--debug)
+			DEBUG_LEVEL=3;
+			DEBUG=true;
+			debug "Mode debug ON"
+			;;
+
+		# Set the debug level
+		--debug-level|-dl)
+			shift
+			case $1 in
+				standard|0) DEBUG_LEVEL=0; DEBUG=false;;
+				warn|1) DEBUG_LEVEL=1; DEBUG=false;;
+				info|2) DEBUG_LEVEL=2; DEBUG=false;;
+				debug|3) DEBUG_LEVEL=3; DEBUG=true; debug "Mode debug ON";;
+				*) fatal "Unknown debug level '$1'. Here is a list of acceptable debug levels : standard, warn, info, debug";;
+			esac
+			;;
+		# Display help message
+		--help|-h)
+			usage && exit
+			;;
+		# Show current script version
+		--version|-V)
+			echo "$VERSION"
+			exit
+			;;
+
+		# Unknown flag
+		*) UNKNOWN_ARGLIST="$UNKNOWN_ARGLIST $arg" ;;
+	esac
+	shift
+done
+
+[ "$UNKNOWN_ARGLIST" != "" ] && fatal "Unknown arguments : $UNKNOWN_ARGLIST"
+
+#===\ Argument parsing /=======================================================
+
+
+APIURL=$(kubectl cluster-info |grep "control plane" | sed 's/.* is running at //' )
+info "We are going to backup the following cluster:"
+info "Api URL : $APIURL"
+info "Node list :"
+kubectl get nodes
+echo "Press enter to continue ..."
+read
+
+
+if [ "$CLUSTER_RESOURCES" = "auto" ]
+then
+	info "Automatically retrieving cluster resources list from API"
+	CLUSTER_RESOURCES="$(kubectl api-resources --namespaced=false -o name |sort|tr '\n' ','|sed 's/,$//')"
+else
+	info "Using custom cluster resources list"
+	debug "Cluster resources : $CLUSTER_RESOURCES"
+fi
+
+if [ "$NAMESPACED_RESOURCES" = "auto" ]
+then
+	info "Automatically retrieving namespaced resources list from API"
+	NAMESPACED_RESOURCES="$(kubectl api-resources --namespaced=true -o name |sort|tr '\n' ','|sed 's/,$//')"
+else
+	info "Using namespaced resources list"
+	debug "Cluster resources : $CLUSTER_RESOURCES"
+fi
+
+# Printing informations
+info "Backup directory is : $BACKUPDIR"
+
+
+function backup-namespaced-resources {
+	ns="$1"
+	info "Backuping namespace '$ns'"
+	mkdir -p "${BACKUPDIR}/namespace/${ns}"
+	(
+		cd "${BACKUPDIR}/namespace/${ns}"
+		kubectl -n "${ns}" get ${NAMESPACED_RESOURCES} -o yaml \
+			| kubectl neat \
+			| yq e '.items[]|splitDoc' - \
+			| awk '
+				/^apiVersion: /{api=$NF;sub("/","_",api)} 
+				/^kind:/{kind=$NF}
+				/^  name:/{name=$NF}
+				!/^--/{s=s $0"\n"}
+				/^---/{file=api"_"kind"_"name".yaml";print s > (file); close(file); s=""}
+			'
+	)
+}
+
+function backup-clusterwide-resources {
+	info "Backuping cluster-wide resources"
+	mkdir -p "${BACKUPDIR}/global"
+	(
+		cd "${BACKUPDIR}/global"
+		kubectl get $CLUSTER_RESOURCES -o yaml \
+			| kubectl neat \
+			| yq e '.items[]|splitDoc' - \
+			| awk '
+				/^apiVersion: /{api=$NF;sub("/","_",api)} 
+				/^kind: /{kind=$NF} 
+				/^  name: /{name=$NF}
+				!/^--/{s=s $0"\n"} 
+				/^---/{file=api"_"kind"_"name".yaml";print s > (file); close(file); s=""}
+			'
+	)
+}
+
+# First, cluster-wide resources
+if [ "${CLUSTER_RESOURCES}" != "" ]
+then
+	backup-clusterwide-resources
+else
+	info "Bypassing cluster-wide resources because list is empty"
+fi
+
+# Then iterating on every namespace in cluster
+if [ "${NAMESPACED_RESOURCES}" != "" ]
+then
+	for ns in $(kubectl get ns --no-headers -o custom-columns=name:metadata.name|sort)
+	do
+		backup-namespaced-resources $ns
+	done
+else
+	info "Bypassing namespaced resources because list is empty"
+fi
+
+info "Backup done"
