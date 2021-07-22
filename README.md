@@ -1,5 +1,13 @@
 `kab` is a Kubernetes backup tool for resources only (not for volumes data)
 
+## Use within docker
+
+If you don't want to setup dependencies, you can use the dockerised version :
+
+```
+docker run -it --rm -v $PWD:/data infrabuilder/kab kab -h
+```
+
 
 ## Usage
 
