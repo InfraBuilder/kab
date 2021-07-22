@@ -43,6 +43,8 @@ function usage {
 	=====[ Optionnal flags ]============================================
 	    -y
 	    --yes                         : Bypass confirmation
+	    -kc <path>
+	    --kubeconfig <path>           : Use custom kubeconfig instead of default one
 	    -cr <list>
 	    --cluster-resources <list>    : Set cluster-wide resource list, comma separated
 	    -nr <list>
@@ -52,7 +54,7 @@ function usage {
 	    --debug                       : Set debug level to "debug"
 	    -dl <level>
 	    --debug-level <level>         : Set debug level
-	                                  Possible values: standard, warn, info, debug
+	                                    Possible values: standard, warn, info, debug
 	    -h
 	    --help                        : Display this help message
 	    -v
@@ -76,6 +78,10 @@ function usage {
 	  -------------------------------------------------------------------------
 	  | knb -nr ""                                                            |
 	  -------------------------------------------------------------------------
+	  Backup cluster with custom kubeconfig
+	  -------------------------------------------------------------------------
+	  | knb -kc path/to/mykubeconfig                                          |
+	  -------------------------------------------------------------------------
 EOF
 }
 
@@ -92,34 +98,47 @@ BACKUPDIR=$(date +"%Y%m%d-%H%M%S")-full
 DEBUG=false
 DEBUG_LEVEL=2
 
+ACCEPTCHECK=false
+
 # Parsing
 UNKNOWN_ARGLIST=""
 while [ "$1" != "" ]
 do
 	arg=$1
 	case $arg in
-		# Set the name of this benchmark run
+		# set kubeconfig path
+		--kubeconfig|-kc)
+			shift
+			[ "$1" = "" ] && fatal "$arg flag must be followed by a value"
+			export KUBECONFIG="$(readlink -f $1)"
+			info "Setting kubeconfig path to '$KUBECONFIG'"
+			;;
+		# Target backup directory
 		--backup-dir|-d)
 			shift
 			[ "$1" = "" ] && fatal "$arg flag must be followed by a value"
 			BACKUPDIR="$1"
 			info "Setting backup dir to '$BACKUPDIR'"
 			;;
-		# Directory where to save graphs:
+		# Cluster-wide resources list, comma separated
 		--cluster-resources|-cr)
 			shift
 			[ "${1:0:1}" = "-" ] && fatal "$arg flag must be followed by a value"
 			CLUSTER_RESOURCES="$1"
 			info "Cluster resources set to ${CLUSTER_RESOURCES}"
 			;;
-		# Directory where to save graphs:
+		# Namespaced resources list, comma separated
 		--namespaced-resources|-nr)
 			shift
 			[ "${1:0:1}" = "-" ] && fatal "$arg flag must be followed by a value"
 			NAMESPACED_RESOURCES="$1"
 			info "Namespaced resources set to ${NAMESPACED_RESOURCES}"
 			;;
-
+		# Disable manual validation
+		--yes|-y)
+			ACCEPTCHECK=true;
+			info "Bypassing validation due to flag $arg"
+			;;
 		# Set the debug level to "debug"
 		--debug)
 			DEBUG_LEVEL=3;
@@ -164,9 +183,7 @@ info "We are going to backup the following cluster:"
 info "Api URL : $APIURL"
 info "Node list :"
 kubectl get nodes
-echo "Press enter to continue ..."
-read
-
+[ "$ACCEPTCHECK" != "true" ] && echo "Press enter to continue ..." && read
 
 if [ "$CLUSTER_RESOURCES" = "auto" ]
 then
